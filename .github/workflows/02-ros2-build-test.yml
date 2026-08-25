@@ -1,0 +1,73 @@
+# STEP 2 OF THE WORKSHOP -- the workflow you would actually put on a lab repo.
+#
+# Reads as the exact same thing you type on your own machine:
+#   rosdep install  ->  colcon build  ->  colcon test
+# The only new idea is `container:`, which runs every step inside the official
+# ROS 2 image so we do not have to install ROS on the runner ourselves.
+
+name: 02 - ROS 2 build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:             # <- the one that matters: check code BEFORE merging
+  workflow_dispatch:
+
+# GOTCHA: inside a `container:`, a bare `run:` step is NOT guaranteed to be bash.
+# GitHub's default shell is `bash -e {0}`, but the docs are explicit: "If bash is
+# not found in the path, this is treated as sh." Plenty of slim and derived images land
+# there -- and `source` is a bashism, so you get:
+#     /opt/ros/jazzy/setup.bash: 1: source: not found
+# Declaring the shell once here fixes every step in the workflow.
+defaults:
+  run:
+    shell: bash
+# (If an image genuinely has no bash, use POSIX instead: `. /opt/ros/jazzy/setup.sh`
+#  -- ROS ships setup.sh next to setup.bash precisely for this.)
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    # Every `run:` step below executes inside this image, which already has
+    # ROS 2 Jazzy, colcon and rosdep in it. Saves ~4 minutes per run.
+    container:
+      image: ros:jazzy-ros-base
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # rosdep turns the <depend> tags in package.xml into apt installs.
+      # This is why package.xml has to be honest about your dependencies.
+      - name: Install dependencies with rosdep
+        run: |
+          apt-get update
+          rosdep update --rosdistro jazzy
+          rosdep install --from-paths . --ignore-src -y --rosdistro jazzy
+
+      # GOTCHA: each `run:` block is a brand-new shell, so the ROS environment
+      # does NOT carry over between steps. You must source it every time.
+      - name: Build
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon build --packages-select turtle_guard
+
+      # GOTCHA: source install/setup.bash BEFORE colcon test.
+      # colcon-pytest delegates to a pytest subprocess and that subprocess
+      # inherits the parent shell's PYTHONPATH. Without sourcing the install
+      # space, the subprocess cannot import turtle_guard and finds 0 tests.
+      - name: Test
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          colcon test --packages-select turtle_guard --event-handlers console_direct+
+
+      # `colcon test` returns 0 even when tests fail -- it only reports that it
+      # finished running them. `colcon test-result` is what turns a failed test
+      # into a failed job. Forgetting this line is the classic ROS CI bug:
+      # a permanently green pipeline that never actually checks anything.
+      - name: Report results
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon test-result --verbose

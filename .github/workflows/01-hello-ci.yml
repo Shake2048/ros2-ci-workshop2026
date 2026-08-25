@@ -1,0 +1,42 @@
+# STEP 1 OF THE WORKSHOP -- the smallest useful workflow.
+#
+# The whole point of this file is to show the four nouns of GitHub Actions:
+#   event  ->  workflow  ->  job  ->  step
+# It builds nothing and tests nothing. Delete it once the room gets the idea.
+
+name: 01 - Hello CI
+
+# EVENT: what wakes this workflow up.
+on:
+  push:
+  workflow_dispatch:        # adds a "Run workflow" button in the Actions tab
+
+jobs:
+  # JOB: a name you pick. Each job gets a fresh, throwaway virtual machine.
+  say-hello:
+    # RUNNER: the machine GitHub rents you. ubuntu-latest is Ubuntu 24.04 today.
+    runs-on: ubuntu-latest
+
+    steps:
+      # STEP: either `uses:` (someone else's reusable action) ...
+      - name: Get a copy of the repository
+        uses: actions/checkout@v7
+
+      # ... or `run:` (a shell command on the runner).
+      - name: Prove we are on a real machine
+        run: |
+          echo "Hello from $(hostname)"
+          echo "Triggered by : ${{ github.actor }}"
+          echo "Event        : ${{ github.event_name }}"
+          echo "Branch       : ${{ github.ref_name }}"
+          echo "Commit       : ${{ github.sha }}"
+          lsb_release -a || cat /etc/os-release
+
+      - name: Show what the checkout gave us
+        run: ls -la
+
+      # Exit code is everything: 0 = green check, anything else = red X.
+      - name: A step that would fail the job
+        run: |
+          echo "Uncomment the next line during the workshop to watch CI go red."
+          # exit 1

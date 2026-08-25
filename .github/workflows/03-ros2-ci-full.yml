@@ -1,0 +1,128 @@
+# STEP 3 OF THE WORKSHOP -- what the same pipeline looks like after a year of
+# living with it. Nothing here is exotic; it is workflow 02 plus four habits:
+#   1. a fast lint job that runs in PARALLEL with the slow build job
+#   2. a MATRIX so one file covers several ROS distros
+#   3. ARTIFACTS so you can download the test XML when something fails
+#   4. CONCURRENCY so pushing twice cancels the stale run instead of queueing
+
+name: 03 - ROS 2 CI (full)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: this workflow only ever reads the repo.
+permissions:
+  contents: read
+
+# One run per branch. A new push cancels the previous, still-running one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# GOTCHA: inside a `container:`, a bare `run:` step is NOT guaranteed to be bash.
+# GitHub's default shell is `bash -e {0}`, but the docs are explicit: "If bash is
+# not found in the path, this is treated as sh." Plenty of slim and derived images land
+# there -- and `source` is a bashism, so you get:
+#     /opt/ros/jazzy/setup.bash: 1: source: not found
+# Declaring the shell once here fixes every step in the workflow.
+defaults:
+  run:
+    shell: bash
+# (If an image genuinely has no bash, use POSIX instead: `. /opt/ros/jazzy/setup.sh`
+#  -- ROS ships setup.sh next to setup.bash precisely for this.)
+
+jobs:
+  # ---------------------------------------------------------------- lint ----
+  # Style feedback in ~40 seconds, without waiting for a full colcon build.
+  lint:
+    name: Lint (${{ matrix.linter }})
+    runs-on: ubuntu-latest
+    container:
+      image: ros:jazzy-ros-base
+    strategy:
+      fail-fast: false      # one failing linter must not hide the others
+      matrix:
+        linter: [copyright, flake8, pep257]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run ament_${{ matrix.linter }}
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          ament_${{ matrix.linter }} turtle_guard
+
+  # ------------------------------------------------------- build and test ----
+  build-and-test:
+    name: Build & test (${{ matrix.ros_distro }})
+    runs-on: ubuntu-latest
+    container:
+      image: ros:${{ matrix.ros_distro }}-ros-base
+    strategy:
+      fail-fast: false
+      matrix:
+        # Jazzy is the LTS most labs are on; keeping a second distro in the
+        # matrix is how you find out you have broken it BEFORE you migrate.
+        ros_distro: [jazzy, kilted]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install dependencies with rosdep
+        run: |
+          apt-get update
+          rosdep update --rosdistro ${{ matrix.ros_distro }}
+          rosdep install --from-paths . --ignore-src -y \
+            --rosdistro ${{ matrix.ros_distro }}
+
+      - name: Build
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon build --packages-select turtle_guard
+
+      # GOTCHA: source install/setup.bash BEFORE colcon test.
+      # colcon-pytest delegates to a pytest subprocess and that subprocess
+      # inherits the parent shell's PYTHONPATH. Without sourcing the install
+      # space, the subprocess cannot import turtle_guard and finds 0 tests.
+      - name: Test
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          source install/setup.bash
+          colcon test --packages-select turtle_guard --event-handlers console_direct+
+
+      - name: Report results
+        run: |
+          source /opt/ros/${{ matrix.ros_distro }}/setup.bash
+          colcon test-result --verbose
+
+      # `if: always()` makes this run even when the test step fails --
+      # which is exactly when you want the logs.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.ros_distro }}
+          path: |
+            build/**/test_results/**/*.xml
+            log/latest_test/**
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------ summary ----
+  # A single job to point branch protection at, so you do not have to update
+  # the required-checks list every time the matrix changes.
+  ci-passed:
+    name: CI passed
+    runs-on: ubuntu-latest
+    needs: [lint, build-and-test]
+    if: always()
+    steps:
+      - name: Fail if anything upstream failed
+        run: |
+          echo "lint            : ${{ needs.lint.result }}"
+          echo "build-and-test  : ${{ needs.build-and-test.result }}"
+          [ "${{ needs.lint.result }}" = "success" ] || exit 1
+          [ "${{ needs.build-and-test.result }}" = "success" ] || exit 1
+          echo "All green."
