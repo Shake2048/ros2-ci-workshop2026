@@ -105,6 +105,7 @@ jobs:
         with:
           name: test-results-${{ matrix.ros_distro }}
           path: |
+            build/**/pytest.xml
             build/**/test_results/**/*.xml
             log/latest_test/**
           retention-days: 14
