@@ -86,3 +86,4 @@ ros2 topic echo /cmd_vel            # x is 0.5, not 9.0
   colcon steps by hand — worth knowing about, but the explicit version above is
   better for learning what is actually happening.
 # workshop 14:54 
+# workshop 15:03 
